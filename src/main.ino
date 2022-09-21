@@ -2,6 +2,7 @@
 #include <Math.h>
 #include <MsTimer2.h>
 #include <math.h>
+#include <ArduinoJson.h>
 #include "DataScope_DP.h"
 
 #define MPU 0x68  //MPUI2C总线地址
@@ -33,6 +34,10 @@ static int L_Pwm,R_Pwm; //左右电机PWM值
 #define DIRECTION_R 4
 static int Velocity_L=0,Velocity_R=0; //左右编码区数据
 
+//小车运动控制信息
+static int speed=0; //前进速度
+static int turn=0; //转弯角度
+
 //直立PD闭环
 static float Balance_Pwm=0; //直立PD得出的PWM值
 static float Balance_Kp=15,Balance_Kd=-2.1;//10 -2.1 直立PD的PD系数
@@ -63,8 +68,8 @@ static float Angle_Last=0;  //上一次的角度值
 static float Angle_Acc=0; //通过加速度得到的角度值
 static float Angle_Gyr=0; //通过角速度得到的角度值
 
-//函数说明：将单精度浮点数据转成4字节数据并存入指定地址 
-//附加说明：用户无需直接操作此函数 
+//函数说明：将单精度浮点数据转成4字节数据并存入指定地址
+//附加说明：用户无需直接操作此函数
 //target:目标单精度数据
 //buf:待写入数组
 //beg:指定从数组第几个元素开始写入
@@ -82,7 +87,7 @@ void Float2Byte(float *target,unsigned char *buf,unsigned char beg)
 //函数说明：将待发送通道的单精度浮点数据写入发送缓冲区
 //Data：通道数据
 //Channel：选择通道（1-10）
-//函数无返回 
+//函数无返回
 void DataScope_Get_Channel_Data(float Data,unsigned char Channel)
 {
   if ( (Channel > 10) || (Channel == 0) ) return;  //通道个数大于10或等于0，直接跳出，不执行函数
@@ -101,33 +106,33 @@ void DataScope_Get_Channel_Data(float Data,unsigned char Channel)
       case 9:  Float2Byte(&Data,DataScope_OutPut_Buffer,33); break;
       case 10: Float2Byte(&Data,DataScope_OutPut_Buffer,37); break;
     }
-  }  
+  }
 }
 
 //函数说明：生成 DataScopeV1.0 能正确识别的帧格式
 //Channel_Number，需要发送的通道个数
 //返回发送缓冲区数据个数
-//返回0表示帧格式生成失败 
+//返回0表示帧格式生成失败
 unsigned char DataScope_Data_Generate(unsigned char Channel_Number)
 {
   if ( (Channel_Number > 10) || (Channel_Number == 0) ) { return 0; }  //通道个数大于10或等于0，直接跳出，不执行函数
   else
-  { 
+  {
    DataScope_OutPut_Buffer[0] = '$';  //帧头
-    
-   switch(Channel_Number)   
-   { 
-     case 1:   DataScope_OutPut_Buffer[5]  =  5; return  6; break;   
+
+   switch(Channel_Number)
+   {
+     case 1:   DataScope_OutPut_Buffer[5]  =  5; return  6; break;
      case 2:   DataScope_OutPut_Buffer[9]  =  9; return 10; break;
      case 3:   DataScope_OutPut_Buffer[13] = 13; return 14; break;
      case 4:   DataScope_OutPut_Buffer[17] = 17; return 18; break;
-     case 5:   DataScope_OutPut_Buffer[21] = 21; return 22; break; 
+     case 5:   DataScope_OutPut_Buffer[21] = 21; return 22; break;
      case 6:   DataScope_OutPut_Buffer[25] = 25; return 26; break;
      case 7:   DataScope_OutPut_Buffer[29] = 29; return 30; break;
      case 8:   DataScope_OutPut_Buffer[33] = 33; return 34; break;
      case 9:   DataScope_OutPut_Buffer[37] = 37; return 38; break;
      case 10:  DataScope_OutPut_Buffer[41] = 41; return 42; break;
-   }   
+   }
   }
   return 0;
 }
@@ -322,7 +327,7 @@ void Set_Direction()
 
 //定时器中断函数，5ms一次
 void Kernel()
-{ 
+{
   sei();  //开启全局中断
   Read_AccGyr_Data(); //获取加速度及角速度的值
   Converse(); //对获取的数据进行换算
@@ -355,7 +360,7 @@ void Kernel()
 void setup() {
   // put your setup code here, to run once:
   pinMode(IN1,OUTPUT);  //电机及PWM引脚为输出模式
-  pinMode(IN2,OUTPUT); 
+  pinMode(IN2,OUTPUT);
   pinMode(IN3,OUTPUT);
   pinMode(IN4,OUTPUT);
   pinMode(PWM_L,OUTPUT);
@@ -363,7 +368,7 @@ void setup() {
   pinMode(ENCODER_L,INPUT); //编码器引脚为输入模式
   pinMode(ENCODER_R,INPUT);
   pinMode(DIRECTION_L,INPUT);
-  pinMode(DIRECTION_R,INPUT);  
+  pinMode(DIRECTION_R,INPUT);
   Serial.begin(9600); //开启串口
   Wire.begin(); //开启I2C通信
   delay(1500);  //延时以等待通信系统全部打开
@@ -375,7 +380,36 @@ void setup() {
   attachInterrupt(0,READ_ENCODER_R,CHANGE);
 }
 
+unsigned char readSerial() {
+    while (!Serial.available())
+        ;
+    return Serial.read();
+}
+
 void loop() {
+    if (Serial.available()) {
+        unsigned char c=readSerial();
+        int dataLen = 0;
+        if (c == 233)
+        {
+            for (int i = 0; i < 4; i++){
+                unsigned char t = readSerial();
+                dataLen = dataLen * 255 + t;
+            }
+            String data_serial;
+            for (int i = 0; i < dataLen; i++)
+            {
+                data_serial += ((char)(readSerial()));
+            }
+            DynamicJsonDocument dataJson(1024);
+            deserializeJson(dataJson, data_serial);
+            speed = dataJson["speed"].as<int>();
+            turn = dataJson["turn"].as<int>();
+            Serial.println("speed: " + String(speed));
+            Serial.println("turn: " + String(turn));
+        }
+    }
+
   // put your main code here, to run repeatedly:
   // Serial.print("L_Pwm: ");
   // Serial.print(L_Pwm);
