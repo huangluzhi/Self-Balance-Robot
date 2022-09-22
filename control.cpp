@@ -1,72 +1,13 @@
+// #include <string>
+#include <iostream>
 #include <Wire.h>
-#include <Math.h>
 #include <MsTimer2.h>
 #include <math.h>
 #include <ArduinoJson.h>
 #include "DataScope_DP.h"
+#include "control.h"
 
-#define MPU 0x68  //MPUI2C总线地址
-
-//MPU6050读取及数据处理
-const int Data_Num=7; //数据数量
-const int Acc_Num=3;  //加速度相关变量数量
-const int Gyr_Num=3;  //角速度相关变量数量
-const float dt=0.005; //中断时间间隔5ms
-static volatile int Measure_Data[Data_Num]; //测量出的数据
-static float Acc_New[Acc_Num];  //换算后的加速度值
-static float Acc_Last[Acc_Num]; //上一次得到的加速度值
-static float Gyr_New[Gyr_Num];  //换算后的角速度值
-static float Gyr_Last[Gyr_Num]; //上一次得到的角速度值
-
-//电机（IN1 LOW,IN2 HIGH 为前，IN3 LOW,IN4 HIGH 为后）
-#define IN1 7 //右轮
-#define IN2 8 //右轮
-#define IN3 10 //左轮
-#define IN4 11  //左轮
-#define PWM_L 9 //左轮PWM引脚
-#define PWM_R 6 //右轮PWM引脚
-static int L_Pwm,R_Pwm; //左右电机PWM值
-
-//编码器
-#define ENCODER_L 3
-#define ENCODER_R 2
-#define DIRECTION_L 5
-#define DIRECTION_R 4
-static int Velocity_L=0,Velocity_R=0; //左右编码区数据
-
-//小车运动控制信息
-static int speed=0; //前进速度
-static int turn=0; //转弯角度
-
-//直立PD闭环
-static float Balance_Pwm=0; //直立PD得出的PWM值
-static float Balance_Kp=15,Balance_Kd=-2.1;//10 -2.1 直立PD的PD系数
-static float Balance_Vel=0; //直立PD得出的期望速度值
-
-//速度PI闭环
-static float Velocity_Pwm=0;  //速度PI得出的PWM值
-static float Velocity_Bias=0; //速度的偏差值
-static float Velocity=0;  //当前速度值
-static float Velocity_Kp=0.4,Velocity_Ki=Velocity_Kp/200; //速度PI的PI系数
-static float Velocity_Integral=0; //速度偏差的积分
-static int Velocity_Count=0;  //速度计数位，使速度PI每40ms进行调控
-
-//虚拟示波器
-unsigned char DataScope_OutPut_Buffer[42] = {0};     //串口发送缓冲区
-unsigned char Send_Count; //发送数据的个数
-
-//加速度及角速度一阶滤波
-const float L_Acc=0.3;  //速度一阶滤波系数
-const float L_Gyr=0.3;  //角速度一阶滤波系数
-
-//加速度与角速度互补融合
-const float F_AccGyr=0.9; //加速度角速度融合置信度
-
-//计算倾角
-static float Angle_New=0; //最新得出的角度值
-static float Angle_Last=0;  //上一次的角度值
-static float Angle_Acc=0; //通过加速度得到的角度值
-static float Angle_Gyr=0; //通过角速度得到的角度值
+using namespace std;
 
 //函数说明：将单精度浮点数据转成4字节数据并存入指定地址
 //附加说明：用户无需直接操作此函数
@@ -74,7 +15,7 @@ static float Angle_Gyr=0; //通过角速度得到的角度值
 //buf:待写入数组
 //beg:指定从数组第几个元素开始写入
 //函数无返回
-void Float2Byte(float *target,unsigned char *buf,unsigned char beg)
+void BalanceCtr::Float2Byte(float *target,unsigned char *buf,unsigned char beg)
 {
     unsigned char *point;
     point = (unsigned char*)target;    //得到float的地址
@@ -88,12 +29,12 @@ void Float2Byte(float *target,unsigned char *buf,unsigned char beg)
 //Data：通道数据
 //Channel：选择通道（1-10）
 //函数无返回
-void DataScope_Get_Channel_Data(float Data,unsigned char Channel)
+void BalanceCtr::DataScope_Get_Channel_Data(float Data,unsigned char Channel)
 {
   if ( (Channel > 10) || (Channel == 0) ) return;  //通道个数大于10或等于0，直接跳出，不执行函数
   else
   {
-     switch (Channel)
+    switch (Channel)
     {
       case 1:  Float2Byte(&Data,DataScope_OutPut_Buffer,1); break;
       case 2:  Float2Byte(&Data,DataScope_OutPut_Buffer,5); break;
@@ -113,33 +54,33 @@ void DataScope_Get_Channel_Data(float Data,unsigned char Channel)
 //Channel_Number，需要发送的通道个数
 //返回发送缓冲区数据个数
 //返回0表示帧格式生成失败
-unsigned char DataScope_Data_Generate(unsigned char Channel_Number)
+unsigned char BalanceCtr::DataScope_Data_Generate(unsigned char Channel_Number)
 {
   if ( (Channel_Number > 10) || (Channel_Number == 0) ) { return 0; }  //通道个数大于10或等于0，直接跳出，不执行函数
   else
   {
-   DataScope_OutPut_Buffer[0] = '$';  //帧头
+  DataScope_OutPut_Buffer[0] = '$';  //帧头
 
-   switch(Channel_Number)
-   {
-     case 1:   DataScope_OutPut_Buffer[5]  =  5; return  6; break;
-     case 2:   DataScope_OutPut_Buffer[9]  =  9; return 10; break;
-     case 3:   DataScope_OutPut_Buffer[13] = 13; return 14; break;
-     case 4:   DataScope_OutPut_Buffer[17] = 17; return 18; break;
-     case 5:   DataScope_OutPut_Buffer[21] = 21; return 22; break;
-     case 6:   DataScope_OutPut_Buffer[25] = 25; return 26; break;
-     case 7:   DataScope_OutPut_Buffer[29] = 29; return 30; break;
-     case 8:   DataScope_OutPut_Buffer[33] = 33; return 34; break;
-     case 9:   DataScope_OutPut_Buffer[37] = 37; return 38; break;
-     case 10:  DataScope_OutPut_Buffer[41] = 41; return 42; break;
-   }
+  switch(Channel_Number)
+  {
+    case 1:   DataScope_OutPut_Buffer[5]  =  5; return  6; break;
+    case 2:   DataScope_OutPut_Buffer[9]  =  9; return 10; break;
+    case 3:   DataScope_OutPut_Buffer[13] = 13; return 14; break;
+    case 4:   DataScope_OutPut_Buffer[17] = 17; return 18; break;
+    case 5:   DataScope_OutPut_Buffer[21] = 21; return 22; break;
+    case 6:   DataScope_OutPut_Buffer[25] = 25; return 26; break;
+    case 7:   DataScope_OutPut_Buffer[29] = 29; return 30; break;
+    case 8:   DataScope_OutPut_Buffer[33] = 33; return 34; break;
+    case 9:   DataScope_OutPut_Buffer[37] = 37; return 38; break;
+    case 10:  DataScope_OutPut_Buffer[41] = 41; return 42; break;
+  }
   }
   return 0;
 }
 
 //读取左轮编码器数据
 //正转+1，反转-1
-void READ_ENCODER_L()
+void BalanceCtr::READ_ENCODER_L()
 {
   if(digitalRead(ENCODER_L)==LOW)
   {
@@ -159,7 +100,7 @@ void READ_ENCODER_L()
 
 //读取左轮编码器数据
 //正转+1，反转-1
-void READ_ENCODER_R() //读取右轮编码器数据
+void BalanceCtr::READ_ENCODER_R() //读取右轮编码器数据
 {
   if(digitalRead(ENCODER_R)==LOW)
   {
@@ -178,7 +119,7 @@ void READ_ENCODER_R() //读取右轮编码器数据
 }
 
 //向MPU中输入一个字节的数据
-void Write_MPUData(int addre,unsigned char Data)
+void BalanceCtr::Write_MPUData(int addre,unsigned char Data)
 {
   Wire.beginTransmission(MPU);
   Wire.write(addre);
@@ -187,7 +128,7 @@ void Write_MPUData(int addre,unsigned char Data)
 }
 
 //从MPU6050中读出全部数据，储存到Measure_Data[Read_Num]中
-void Read_AccGyr_Data()
+void BalanceCtr::Read_AccGyr_Data()
 {
   Wire.beginTransmission(MPU);
   Wire.write(0x3B);
@@ -198,7 +139,7 @@ void Read_AccGyr_Data()
 }
 
 //计算出角度值
-void GetPitch()
+void BalanceCtr::GetPitch()
 {
   Angle_Last=Angle_New; //存储上一次的角度值
   Angle_Acc=atan(Acc_New[0]/Acc_New[2]);  //通过加速度得到当前角度值（弧度制）
@@ -208,7 +149,7 @@ void GetPitch()
 }
 
 //对读数进行换算，并转化成浮点型物理量
-void Converse()
+void BalanceCtr::Converse()
 {
   for(int i=0;i<3;i++)
     Acc_Last[i]=Acc_New[i]; //对数据进行存储
@@ -227,7 +168,7 @@ void Converse()
 }
 
 //计算直立的PWM值，5ms一次
-void Set_Balance_Pwm()
+void BalanceCtr::Set_Balance_Pwm()
 {
   Balance_Pwm=Balance_Kp*Angle_New+Balance_Kd*Gyr_New[1]; //计算出直立的PWM值
   // Balance_Pwm+=1.0*(Balance_Pwm-(Velocity/10));
@@ -235,7 +176,7 @@ void Set_Balance_Pwm()
 }
 
 //计算速度的PWM值，40ms一次
-void Set_Velocity_Pwm()
+void BalanceCtr::Set_Velocity_Pwm()
 {
   Velocity_Bias=Velocity_L*9.6+Velocity_R*9.6-0.0;  //计算此时的速度偏差值，9.6为一任意系数，增大编码器读数
   Velocity*=0.7;  //速度值一阶低通滤波
@@ -252,7 +193,7 @@ void Set_Velocity_Pwm()
 }
 
 //为左右轮赋PWM值
-void Coor_Motor()
+void BalanceCtr::Coor_Motor()
 {
   L_Pwm=Balance_Pwm; //为左轮赋值
   R_Pwm=Balance_Pwm; //为右轮赋值
@@ -262,7 +203,7 @@ void Coor_Motor()
 }
 
 //PWM限幅
-void Limit_Pwm()
+void BalanceCtr::Limit_Pwm()
 {
   const int L_Pwm_DZ = 90;
   const int R_Pwm_DZ = 100;
@@ -313,7 +254,7 @@ void Limit_Pwm()
 }
 
 //通过计算出来的PWM设置正反转，视接线方法而定
-void Set_Direction()
+void BalanceCtr::Set_Direction()
 {
   if(L_Pwm<0)
     digitalWrite(IN3,LOW),digitalWrite(IN4,HIGH);
@@ -326,7 +267,7 @@ void Set_Direction()
 }
 
 //定时器中断函数，5ms一次
-void Kernel()
+void BalanceCtr::Kernel()
 {
   sei();  //开启全局中断
   Read_AccGyr_Data(); //获取加速度及角速度的值
@@ -357,39 +298,17 @@ void Kernel()
   // delay(50);
 }
 
-void setup() {
-  // put your setup code here, to run once:
-  pinMode(IN1,OUTPUT);  //电机及PWM引脚为输出模式
-  pinMode(IN2,OUTPUT);
-  pinMode(IN3,OUTPUT);
-  pinMode(IN4,OUTPUT);
-  pinMode(PWM_L,OUTPUT);
-  pinMode(PWM_R,OUTPUT);
-  pinMode(ENCODER_L,INPUT); //编码器引脚为输入模式
-  pinMode(ENCODER_R,INPUT);
-  pinMode(DIRECTION_L,INPUT);
-  pinMode(DIRECTION_R,INPUT);
-  Serial.begin(9600); //开启串口
-  Wire.begin(); //开启I2C通信
-  delay(1500);  //延时以等待通信系统全部打开
-  Write_MPUData(0x6B,0);  //激活MPU6050
-  delay(20);
-  MsTimer2::set(2,Kernel);  //设置5ms的定时器中断，中断函数为Kernel
-  MsTimer2::start();  //打开定时器中断
-  attachInterrupt(1,READ_ENCODER_L,CHANGE); //打开外部中断，用于编码器计数，下同
-  attachInterrupt(0,READ_ENCODER_R,CHANGE);
-}
 
-unsigned char readSerial() {
+unsigned char BalanceCtr::readSerial() {
     while (!Serial.available())
         ;
     return Serial.read();
 }
 
-String readSerialStr() {
+string BalanceCtr::readSerialStr() {
   unsigned char c=readSerial();
   int dataLen = 0;
-  String data_serial
+  string data_serial
   if (c == 233)
   {
     for (int i = 0; i < 4; i++){
@@ -402,44 +321,4 @@ String readSerialStr() {
     }
   }
   return data_serial;
-}
-
-void loop() {
-  if (Serial.available()) {
-    String dataStr = readSerialStr();
-    if (dataStr != ""){
-      DynamicJsonDocument dataJson(1024);
-      deserializeJson(dataJson, data_serial);
-      speed = dataJson["speed"].as<int>();
-      turn = dataJson["turn"].as<int>();
-      Serial.println("speed: " + String(speed));
-      Serial.println("turn: " + String(turn));
-      if (dataJson["bal_Kp"].as<int>() != 0) 
-        Balance_Kp = dataJson["bal_Kp"].as<int>();
-      if (dataJson["bal_Kd"].as<int>() != 0) 
-        Balance_Kd = dataJson["bal_Kd"].as<int>();
-      if (dataJson["spd_Kp"].as<int>() != 0) 
-        Velocity_Kp = dataJson["spd_Kp"].as<int>();
-      if (dataJson["spd_Kd"].as<int>() != 0) 
-        Velocity_Ki = dataJson["spd_Kd"].as<int>();
-    }
-  }
-
-  // put your main code here, to run repeatedly:
-  // Serial.print("L_Pwm: ");
-  // Serial.print(L_Pwm);
-  // Serial.print("\t");
-  // Serial.print("R_Pwm: ");
-  // Serial.print(R_Pwm);
-  // Serial.print("\t");
-  // Serial.print("Balance_Pwm: ");
-  // Serial.print(Balance_Pwm);
-  // Serial.print("\t");
-  // Serial.print("Velocity: ");
-  // Serial.print(Velocity);
-  // Serial.print("\t");
-  // Serial.print("Velocity_Integral: ");
-  // Serial.print(Velocity_Integral);
-  // Serial.print("\t");
-  // Serial.print("\n");
 }
